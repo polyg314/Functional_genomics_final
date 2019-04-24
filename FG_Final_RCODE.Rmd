@@ -1,0 +1,185 @@
+---
+title: "Investigating Differentially Expressed Genes in Latent HIV+ T Cells"
+author: "Paul Gaudin"
+date: "4/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+####Load the prepared data frame (seen here as "ctpp") and then create a DESeq object using it
+```{r message=FALSE}
+
+ctpp <- read.csv(file = "counts_table_prepared.csv", row.names = 1)
+
+column_names <- c("SRR5071107", "SRR5071108", "SRR5071109", "SRR5071110", "SRR5071111", "SRR5071112", "SRR5071113", "SRR5071114", "SRR5071115", "SRR5071116", "SRR5071117", "SRR5071118", "SRR5071119", "SRR5071120", "SRR5071121", "SRR5071122") 
+
+sample_type = c("HIV_EXP_GFP_NEG", "HIV_EXP_GFP_NEG", "VLP_VPX_TREATED", "VLP_VPX_TREATED", "HIV_EXP_GFP_POS", "HIV_EXP_GFP_NEG", "VLP_VPX_TREATED", "NON_EXPOSED_OR_TREATED", "NON_EXPOSED_OR_TREATED", "HIV_EXP_GFP_POS", "HIV_EXP_GFP_NEG", "VLP_VPX_TREATED", "HIV_EXP_GFP_POS", "HIV_EXP_GFP_POS", "NON_EXPOSED_OR_TREATED", "NON_EXPOSED_OR_TREATED")
+
+donor = c("Donor_4", "Donor_3", "Donor_4", "Donor_1", "Donor_1", "Donor_1", "Donor_3", "Donor_2", "Donor_1", "Donor_4", "Donor_2", "Donor_2", "Donor_3", "Donor_2", "Donor_3", "Donor_4")
+
+column_data <- data.frame(sample_type, donor)
+
+rownames(column_data) <- column_names[1:16]
+
+library("DESeq2")
+
+cts <- as.matrix(ctpp)
+
+save(cts, file="cts.rds")
+
+dds <- DESeqDataSetFromMatrix(countData = cts,
+                              colData = column_data,
+                              design= ~ donor + sample_type)
+
+dds <- DESeq(dds)
+
+```
+
+####Keep transripts which have a sum of 10 transcripts over all samples
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+####Set reference (control) as HIV_EXPOSED_GFP_NEGATIVE
+```{r}
+dds$sample_type <- relevel(dds$sample_type, ref = "HIV_EXP_GFP_NEG")
+```
+
+####Set object "res" to contain the results of "HIV_EXP_GFP_POS" vs "HIV_EXP_GFP_NEG"
+```{r}
+res <- results(dds, contrast=c("sample_type","HIV_EXP_GFP_POS", "HIV_EXP_GFP_NEG"))
+
+#resultsNames(dds)
+```
+
+####Save another log-fold-counts object for later use that compares "HIV_EXP_GFP_POS" vs "HIV_EXP_GFP_NEG" as "resLFC"
+```{r}
+resLFC <- lfcShrink(dds, coef="sample_type_HIV_EXP_GFP_POS_vs_HIV_EXP_GFP_NEG", type="apeglm")
+
+#summary(resLFC)
+```
+
+####See how many genes are signifantly upregulated (cutoff < 1*(10^-8)) in "HIV_EXP_GFP_POS" vs "HIV_EXP_GFP_NEG"
+```{r}
+sum(res$padj < 1*(10^-8), na.rm=TRUE)
+
+total_up_reg <- subset(res, res$padj < 1*(10^-8))
+
+total_up_reg <- subset(total_up_reg, total_up_reg$log2FoldChange > 3)
+
+nrow(total_up_reg)
+
+```
+
+#### Create MA-plot log2 Fold Changes "HIV_EXP_GFP_POS" vs "HIV_EXP_GFP_NEG"
+
+```{r}
+plotMA(resLFC, alpha= 10^-8, ylim=c(-4,4))
+```
+
+####Volcano plot of the log2FoldChange vs pvalues for expression in "HIV_EXP_GFP_POS" vs "HIV_EXP_GFP_NEG" samples 
+```{r message=FALSE}
+
+library(EnhancedVolcano)
+
+EnhancedVolcano(res, lab = rownames(res), x = "log2FoldChange",y = "padj", pCutoff = 10e-8,  xlim = c(-6, 6))
+
+```
+
+####Create PCA plots - one using sample type and other using donor variables
+```{r}
+
+rld <- rlog(dds)
+
+pcaData <- plotPCA(rld, intgroup=c("sample_type", "donor"), returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, color=sample_type, shape=donor)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+
+```
+
+####Create euclidean distance heatmaps of the samples
+```{r}
+
+sampleDists <- dist(t(assay(dds)))
+
+library("RColorBrewer")
+library("pheatmap")
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(dds$sample_type, dds$donor, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+
+
+
+```
+
+#### Look at Gene of Interest in Referenced Descours et al. Study, "CD32a" 
+
+NOTE: This gene name has synonym names, which in my analysis the gene synonym is "FCGR2A"
+
+```{r}
+
+d <- plotCounts(dds, gene=which(row.names(res) == "FCGR2A"), intgroup=c("sample_type"), 
+                returnData=TRUE)
+library("ggplot2")
+ggplot(d, aes(x=sample_type, y=count, color=donor)) + 
+  geom_point(position=position_jitter(w=0.1,h=0), size=3) + 
+  scale_y_log10() + scale_x_discrete(labels = c("HIV+GFP-", "HIV+GFP+", "NI", "VPX+"))
+
+```
+
+####Generate Histogram plot of log2 Fold Changes in the Surface Proteins of interest identified in Descours et al., using standard error for error bars
+```{r}
+
+surface_proteins_of_interest <- c("AQP9", "SUCNR1", "CEACAM3", "STEAP1B", "GJB2", "COLEC12", "HCAR2", "TREM1", "CD300C", "CLEC4D", "TLR2", "FCGR2A")
+
+surface_proteins_of_interest_indexes <- c()
+for(i in surface_proteins_of_interest){
+  surface_proteins_of_interest_indexes <- c(surface_proteins_of_interest_indexes, which(row.names(res) == i))
+}
+
+log_2_changes_SPs <- c()
+
+##standard errors:
+se_SPs <- c()
+
+pvals_SPs <- c()
+
+for(i in surface_proteins_of_interest_indexes){
+  log_2_changes_SPs <- c(log_2_changes_SPs, res$log2FoldChange[i])
+  se_SPs <- c(se_SPs, res$lfcSE[i])
+  pvals_SPs <- c(pvals_SPs, res$padj[i])
+}
+
+SP_df <- data.frame(surface_proteins_of_interest, log_2_changes_SPs, se_SPs, pvals_SPs)
+
+SP_plot <- ggplot(SP_df, aes(surface_proteins_of_interest, log_2_changes_SPs)) + 
+                   geom_col() + geom_errorbar(aes(ymin = log_2_changes_SPs - se_SPs, ymax = log_2_changes_SPs + se_SPs), width=0.2)
+
+SP_plot + theme(axis.text.x = element_text(angle = 90, hjust = 1))+scale_fill_brewer(palette="Blues")
+
+```
+
+##Key Data Sets Needed for Analysis (prepared separately)
+
+```{r}
+library("knitr")
+
+data_sets <- data.frame(file_name=c("ProjectGenesDataFrame.csv", "counts_table_prepared.csv"), file_description=c("Used to keep track of gene_id -> gene_symbols", "Prepared counts table, ready for input into DESeq2"))
+
+kable(data_sets)
+
+```
